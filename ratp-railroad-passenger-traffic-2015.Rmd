@@ -1,0 +1,342 @@
+---
+title: "Passenger Traffic on the Paris RATP Railway Network in 2015"
+author: "Sébastien Pujadas"
+date: "12th February 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, echo = FALSE, message = FALSE, 
+                      warning = FALSE)
+```
+
+## Introduction
+
+This project was created as part of the Developing Data Products course of the Coursera [Data Science Specialisation](https://www.coursera.org/specializations/jhu-data-science). The goal of the project is to create a web page using R Markdown that features a map created with Leaflet, and to host the resulting web page on either GitHub Pages, RPubs, or NeoCities.
+
+*Note – The R Markdown source code of this presentation can be found in [this GitHub repository](https://github.com/spujadas/coursera-ddp-leaflet).*
+
+## Map of passenger traffic
+
+The following map represents passenger traffic on the Paris RATP railway network in 2015. Clicking on a station shows the total number of passengers that entered the station during that year.
+
+```{r prerequisites}
+rm(list=ls())
+library(leaflet)
+library(jsonlite)
+library(dplyr)
+library(stringr)
+```
+
+```{r load_data}
+# load traffic data
+station_traffic <- read.csv2(
+  "data/trafic-annuel-entrant-par-station-du-reseau-ferre-2015.csv",
+  header = TRUE, encoding = "UTF-8", stringsAsFactors = FALSE)
+
+# keep only columns of interest (network, station, traffic)
+station_traffic <- station_traffic %>% select(Réseau, Station, Trafic)
+
+# load location data
+station_location <- read.csv2(
+  "data/emplacement-des-gares-idf-data-generalisee.csv",
+  header = TRUE, encoding = "UTF-8", stringsAsFactors = FALSE)
+
+# load geographical network layout data
+geocsv <- read.csv2("data/traces-du-reseau-ferre-idf.csv", 
+                    stringsAsFactors = FALSE)
+```
+
+```{r prepare_traffic_data}
+# keep only columns of interest (coordinates, long name, line types)
+station_location <- station_location %>% 
+  select(Geo.Point, NOM_LONG, RER, METRO)
+
+# split Geo.Point string into latitude and longitude
+station_lat_lng <- data.frame(
+  str_split_fixed(station_location$Geo.Point, ", ", 2),
+  stringsAsFactors = FALSE)
+colnames(station_lat_lng) <- c("lat", "lng")
+
+# convert coordinates to numeric
+station_lat_lng <- sapply(station_lat_lng, as.numeric)
+
+# replace Geo.Point with separate coordinates
+station_location <- cbind(station_lat_lng, station_location)
+station_location <- station_location %>% select(-Geo.Point)
+
+# remove two RER stations on the SNCF network that have the same name as
+# metro (RATP) stations; only the latter are needed
+### found using:
+## station_location[duplicated(station_location$NOM_LONG), "NOM_LONG"]
+station_location <- station_location[
+  !(station_location$NOM_LONG %in% c("MALESHERBES", "SAINT-FARGEAU") &
+      station_location$RER == 1), ]
+
+# create vector mapping names of stations from the traffic data set to
+# those of the location data set, to be used to join the two data sets
+stationKeyName <- station_traffic$Station
+
+# drop "-RER" suffix from stations that are both metro and RER stations
+stationKeyName <- gsub("-RER$", "", stationKeyName)
+
+# manually define mapping for 54 stations that are named differently in the
+# two data sets
+stationKeyName <- sub("^GARE D'AUSTERLITZ", "AUSTERLITZ", stationKeyName)
+stationKeyName <- sub("^VAUGIRARD", 
+                      "VAUGIRARD (ADOLPHE CHERIOU)", stationKeyName)
+stationKeyName <- sub("^ETIENNE MARCEL", "ETIENNE-MARCEL", stationKeyName)
+stationKeyName <- sub("^PLACE MONGE", 
+                      "PLACE MONGE (JARDIN DES PLANTES)", stationKeyName)
+stationKeyName <- sub("^BEL AIR", "BEL-AIR", stationKeyName)
+stationKeyName <- sub("^LES AGNETTES", 
+                      "LES AGNETTES-ASNIERES-GENNEVILLIERS", stationKeyName)
+stationKeyName <- sub("^LOUVRE", "LOUVRE-RIVOLI", stationKeyName)
+stationKeyName <- sub("^LA COURNEUVE-8 MAI 1945", 
+                      "LA COURNEUVE 8 MAI 1945", stationKeyName)
+stationKeyName <- sub("^CRETEIL-PREFECTURE", 
+                      "CRETEIL-PREFECTURE (HOTEL DE VILLE)", stationKeyName)
+stationKeyName <- sub("^PEREIRE", "PEREIRE-LEVALLOIS", stationKeyName)
+stationKeyName <- sub("^MARNE-LA-VALLEE-CHESSY", 
+                      "CHESSY - MARNE-LA-VALLEE", stationKeyName)
+stationKeyName <- sub("^VAL D'EUROPE", "VAL-D'EUROPE", stationKeyName)
+stationKeyName <- sub("^VOLTAIRE", "VOLTAIRE (LEON BLUM)", stationKeyName)
+stationKeyName <- sub("^LES SABLONS", 
+                      "LES SABLONS (JARDIN D'ACCLIMATATION)", stationKeyName)
+stationKeyName <- sub("^BOULOGNE-PONT DE SAINT-CLOUD", 
+                      "BOULOGNE-PONT DE SAINT CLOUD", stationKeyName)
+stationKeyName <- sub("^CORENTIN CELTON", "CORENTIN-CELTON", stationKeyName)
+stationKeyName <- sub("^JAVEL-ANDRE CITROEN", "JAVEL", stationKeyName)
+stationKeyName <- sub("^BOBIGNY-PANTIN-RAYMOND QUENEAU", 
+                      "BOBIGNY-PANTIN (RAYMOND QUENEAU)", stationKeyName)
+stationKeyName <- sub("^LA TOUR-MAUBOURG", "LA TOUR MAUBOURG", stationKeyName)
+stationKeyName <- sub("^PONT NEUF", "PONT-NEUF (LA MONNAIE)", stationKeyName)
+stationKeyName <- sub("^PARC DE SCEAUX", "PARC-DE-SCEAUX", stationKeyName)
+stationKeyName <- sub("^LE PARC DE SAINT-MAUR", 
+                      "LE PARC-DE-SAINT-MAUR", stationKeyName)
+stationKeyName <- sub("^FRANKLIN D. ROOSEVELT", 
+                      "FRANKLIN-D.ROOSEVELT", stationKeyName)
+stationKeyName <- sub("^GRANDS BOULEVARDS", 
+                      "GRANDS BOULEVARDS (RUE MONTMARTRE)", stationKeyName)
+stationKeyName <- sub("^PALAIS-ROYAL", 
+                      "PALAIS ROYAL-MUSEE DU LOUVRE", stationKeyName)
+stationKeyName <- sub("^LA DEFENSE", "LA DEFENSE-GRANDE ARCHE", stationKeyName)
+stationKeyName <- sub("^MONTPARNASSE-BIENVENUE", "MONTPARNASSE", 
+                      stationKeyName)
+stationKeyName <- sub("^CHAUSSEE D'ANTIN-LA FAYETTE", 
+                      "CHAUSSEE D'ANTIN (LA FAYETTE)", stationKeyName)
+stationKeyName <- sub("^PLACE CLICHY", "PLACE DE CLICHY", stationKeyName)
+stationKeyName <- sub("^AUBERVILLIERS-PANTIN-QUATRE CHEMINS", 
+                      "AUBERVILLIERS-PANTIN (QUATRE CHEMINS)", stationKeyName)
+stationKeyName <- sub("^FUNICULAIRE", 
+                      "FUNICULAIRE MONTMARTRE STATION BASSE", stationKeyName)
+stationKeyName <- sub("^LA CROIX DE BERNY", 
+                      "LA CROIX-DE-BERNY-FRESNES", stationKeyName)
+stationKeyName <- sub("^SAINT-GERMAIN DES PRES", 
+                      "SAINT-GERMAIN-DES-PRES", stationKeyName)
+stationKeyName <- sub("^GABRIEL PERI", 
+                      "GABRIEL PERI-ASNIERES-GENNEVILLIERS", stationKeyName)
+stationKeyName <- sub("^GALLIENI", 
+                      "GALLIENI (PARC DE BAGNOLET)", stationKeyName)
+stationKeyName <- sub("^CHARLES DE GAULLE-ETOILE", 
+                      "CHARLES DE GAULLE ETOILE", stationKeyName)
+stationKeyName <- sub("^PRE-SAINT-GERVAIS", "PRE SAINT-GERVAIS", 
+                      stationKeyName)
+stationKeyName <- sub("^SAINT-MICHEL-NOTRE-DAME", 
+                      "SAINT-MICHEL", stationKeyName)
+stationKeyName <- sub("^CLUNY LA SORBONNE", 
+                      "CLUNY-LA-SORBONNE", stationKeyName)
+stationKeyName <- sub("^RUE DE LA POMPE", 
+                      "RUE DE LA POMPE (AVENUE GEORGES MANDEL)", 
+                      stationKeyName)
+stationKeyName <- sub("^BIBLIOTHEQUE", 
+                      "BIBLIOTHEQUE FRANCOIS MITTERRAND", stationKeyName)
+stationKeyName <- sub("^PONT DE NEUILLY", 
+                      "PONT DE NEUILLY (AVENUE DE MADRID)", stationKeyName)
+stationKeyName <- sub("^GONCOURT", 
+                      "GONCOURT (HOPITAL SAINT-LOUIS)", stationKeyName)
+stationKeyName <- sub("^QUATRE-SEPTEMBRE", "QUATRE SEPTEMBRE", stationKeyName)
+stationKeyName <- sub("^CARDINAL LEMOINE", "CARDINAL-LEMOINE", stationKeyName)
+stationKeyName <- sub("^PONT MARIE", 
+                      "PONT-MARIE (CITE DES ARTS)", stationKeyName)
+stationKeyName <- sub("^SAINT-SEBASTIEN-FROISSART", 
+                      "SAINT-SEBASTIEN FROISSART", stationKeyName)
+stationKeyName <- sub("^MALAKOFF-RUE ETIENNE DOLET", 
+                      "MALAKOFF-RUE TIENNE DOLET", stationKeyName)
+stationKeyName <- sub("^CRETEIL-L'ECHAT", 
+                      "CRETEIL-L'ECHAT (HOPITAL MONDOR)", stationKeyName)
+stationKeyName <- sub("^LES COURTILLES", 
+                      "LES COURTILLES-ASNIERES-GENNEVILLIERS", stationKeyName)
+stationKeyName <- sub("^CROIX DE CHAVAUX", 
+                      "CROIX DE CHAVAUX (JACQUES DUCLOS)", stationKeyName)
+stationKeyName <- sub("^VAL DE FONTENAY", "VAL-DE-FONTENAY", stationKeyName)
+stationKeyName <- sub("^BIR-HAKEIM", "BIR-HAKEIM (GRENELLE)", stationKeyName)
+stationKeyName <- sub("^SAINT-PAUL", "SAINT-PAUL (LE MARAIS)", stationKeyName)
+
+# add the mapped names to the traffic data set
+station_traffic$keyName <- stationKeyName
+
+# join the two data sets (removes one empty row)
+station_all <- inner_join(station_traffic, station_location,
+                         by = c("keyName" = "NOM_LONG"))
+
+# add jitter to coordinates of overlapping stations (i.e. with same key name)
+dup_stations <- station_all$keyName[duplicated(station_all$keyName)]
+is_dup_station <- station_all$keyName %in% dup_stations
+
+set.seed(12345)
+station_all$lat[is_dup_station] <- 
+  jitter(station_all$lat[is_dup_station], factor = .1)
+station_all$lng[is_dup_station] <-
+  jitter(station_all$lng[is_dup_station], factor = .1)
+
+# sort stations in order of decreasing traffic so that smaller markers are
+# displayed on top of larger ones
+station_all <- station_all[order(station_all$Trafic, decreasing = TRUE), ]
+```
+
+```{r prepare_network_layout_data}
+# GeoJSON helper functions
+
+# FUNCTION
+# genFeatureCollectionFromGeoShapeList(shapes, style)
+# 
+# DESCRIPTION
+# Converts a list of GeoJSON shapes (geometries) to a single GeoJSON 
+# FeatureCollection that can be passed to leaflet's addGeoJson() function
+#
+# INPUT
+# - shapes: a list of GeoJSON shapes
+# - style: a style list to apply to the FeatureCollection
+#
+# OUTPUT
+# A GeoJSON FeatureCollection that can be passed to leaflet's addGeoJSON()
+# function
+
+genFeatureCollectionFromGeoShapeList <- function(shapes, style) {
+  features <- lapply(shapes, function(shape) {
+    feature <- list()
+    feature$type <- "Feature"
+    feature$geometry <- fromJSON(shape)
+    feature$properties <- list()
+    return(feature)
+  })
+
+  featureCollection <- list()
+  featureCollection$type <- "FeatureCollection"
+  featureCollection$features <- features
+  featureCollection$style = style
+  
+  return(featureCollection)
+}
+
+
+# FUNCTION
+# genFeatureCollectionFromGeoCsv(gcsv, nwk_com, colour, weight)
+# 
+# DESCRIPTION
+# Extracts a list of GeoJSON shapes (geometries) for a given line of the 
+# layout of the Île-de-France railway network data set, and returns a styled
+# GeoJSON FeatureCollection that can be passed to leaflet's addGeoJson()
+# function
+#
+# INPUT
+# - gcsv: a data frame containing the layout of the Île-de-France railway
+#     network data set
+# - nwk_com: a commercial line name (e.g. "M1" for metro line 1),
+#     corresponding to the RES_COM column of the aforementioned data set
+# - colour: the colour of the line (e.g. "#FFCD00" for metro line 1)
+# - weight: the weight to be used to style the line
+#
+# OUTPUT
+# A GeoJSON FeatureCollection that can be passed to leaflet's addGeoJSON()
+# function
+
+genFeatureCollectionFromGeoCsv <- function(gcsv, nwk_com, colour, weight) {
+  return(genFeatureCollectionFromGeoShapeList(
+    gcsv$Geo.Shape[gcsv$RES_COM == nwk_com],
+    list(
+      weight = weight,
+      color = colour,
+      opacity = 1,
+      fillOpacity = 0
+    )
+  ))
+}
+```
+
+```{r geojson}
+# generate FeatureCollection for each line (metro and RERs A and B)
+m1 <- genFeatureCollectionFromGeoCsv(geocsv, "M1", "#FFCD00", 3)
+m2 <- genFeatureCollectionFromGeoCsv(geocsv, "M2", "#003CA6", 3)
+m3 <- genFeatureCollectionFromGeoCsv(geocsv, "M3", "#837902", 3)
+m3b <- genFeatureCollectionFromGeoCsv(geocsv, "M3bis", "#6EC4E8", 3)
+m4 <- genFeatureCollectionFromGeoCsv(geocsv, "M4", "#CF009E", 3)
+m5 <- genFeatureCollectionFromGeoCsv(geocsv, "M5", "#FF7E2E", 3)
+m6 <- genFeatureCollectionFromGeoCsv(geocsv, "M6", "#6ECA97", 3)
+m7 <- genFeatureCollectionFromGeoCsv(geocsv, "M7", "#FA9ABA", 3)
+m7b <- genFeatureCollectionFromGeoCsv(geocsv, "M7bis", "#6ECA97", 3)
+m8 <- genFeatureCollectionFromGeoCsv(geocsv, "M8", "#E19BDF", 3)
+m9 <- genFeatureCollectionFromGeoCsv(geocsv, "M9", "#B6BD00", 3)
+m10 <- genFeatureCollectionFromGeoCsv(geocsv, "M10", "#C9910D", 3)
+m11 <- genFeatureCollectionFromGeoCsv(geocsv, "M11", "#704B1C", 3)
+m12 <- genFeatureCollectionFromGeoCsv(geocsv, "M12", "#007852", 3)
+m13 <- genFeatureCollectionFromGeoCsv(geocsv, "M13", "#6EC4E8", 3)
+m14 <- genFeatureCollectionFromGeoCsv(geocsv, "M14", "#62259D", 3)
+rerA <- genFeatureCollectionFromGeoCsv(geocsv, "RER A", "#E2231A", 5)
+rerB <- genFeatureCollectionFromGeoCsv(geocsv, "RER B", "#7BA3DC", 5)
+```
+
+```{r map}
+# define palette for markers (green for metro network, blue for RER network)
+pal <- colorFactor(c("#00C4B3", "#050D9E"), domain = c("Métro", "RER"))
+
+# create and display map
+m <- station_all %>% leaflet() %>%
+  addProviderTiles("CartoDB.Positron") %>% 
+  setView(lng = 2.352, lat = 48.857, zoom = 12) %>%
+  
+  # add RER and metro lines
+  addGeoJSON(rerA) %>%
+  addGeoJSON(rerB) %>%
+  addGeoJSON(m1) %>%
+  addGeoJSON(m2) %>%
+  addGeoJSON(m3) %>%
+  addGeoJSON(m3b) %>%
+  addGeoJSON(m4) %>%
+  addGeoJSON(m5) %>%
+  addGeoJSON(m6) %>%
+  addGeoJSON(m7) %>%
+  addGeoJSON(m7b) %>%
+  addGeoJSON(m8) %>%
+  addGeoJSON(m9) %>%
+  addGeoJSON(m10) %>%
+  addGeoJSON(m11) %>%
+  addGeoJSON(m12) %>%
+  addGeoJSON(m13) %>%
+  addGeoJSON(m14) %>%
+  
+  # add stations (size represents traffic)
+  addCircleMarkers(~lng, ~lat, 
+                   radius = ~sqrt(Trafic/100000),
+                   color = ~pal(Réseau),
+                   stroke = FALSE, fillOpacity = 1,
+                   popup = ~paste("<strong>", Station, "</strong></br>",
+                                  format(Trafic, big.mark = ",", trim = TRUE), 
+                                  sep = ""))
+
+m
+
+```
+
+## Data sources and licences
+
+This project uses the following data:
+
+- [Positions géographiques des stations du réseau RATP](https://data.ratp.fr/explore/dataset/positions-geographiques-des-stations-du-reseau-ratp/information/) (geographic position of stations on RATP network), released under the [Open Database License 1.0](http://www.vvlibri.org/fr/licence/odbl/10/fr/legalcode)
+
+- [Trafic annuel entrant par station du réseau ferré 2015](https://data.ratp.fr/explore/dataset/trafic-annuel-entrant-par-station-du-reseau-ferre-2015/export/) (annual traffic by station on railway network 2015), released under the [Etalab Open License](https://www.etalab.gouv.fr/licence-ouverte-open-licence).
+
+- [Tracés du réseau de transport ferré d'Ile-de-France](https://opendata.stif.info/explore/dataset/traces-du-reseau-ferre-idf/) (layout of the Île-de-France railway network), released under the [Etalab Open License](https://www.etalab.gouv.fr/licence-ouverte-open-licence).
+
+- [Indices et couleurs de lignes du réseau ferré RATP](https://data.ratp.fr/explore/dataset/indices-et-couleurs-de-lignes-du-reseau-ferre-ratp/) (icons and colours of the RATP railway network lines), released under the [RATP licence](http://data.ratp.fr/page/cgu_ratp).
